@@ -10,6 +10,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`url_opener` opens links through your own command**, e.g. a browser bridge under `herdr --remote`.
   Thanks [@elrandar](https://github.com/elrandar) ([#102](https://github.com/persiyanov/herdr-reviewr/pull/102)).
 
+### Fixed
+- **Files `.gitattributes` marks `-diff` or `binary` show the binary notice**, like `git diff`.
+  Thanks [@timharek](https://github.com/timharek) ([#72](https://github.com/persiyanov/herdr-reviewr/pull/72)).
+- **Changed words inside code comments stay readable** on the word highlight.
+  Thanks [@ubuntudroid](https://github.com/ubuntudroid) ([#91](https://github.com/persiyanov/herdr-reviewr/pull/91)).
+
 ## [0.38.1] — 2026-09-23
 
 ### Fixed
