@@ -451,7 +451,7 @@ fn parse_plugin_config(path: &Path) -> Result<PluginConfig, PluginConfigError> {
             .ok_or_else(|| value_error(path, "editor", "a non-empty command"))?;
         // `{file}` and `{line}` are the whole grammar, so a typo for one of them would
         // otherwise reach the editor as a literal word and open a file named after the typo
-        if let Some(unknown) = unknown_placeholder(command) {
+        if let Some(unknown) = unknown_placeholder(command, &["file", "line"]) {
             return Err(value_error(
                 path,
                 "editor",
@@ -465,6 +465,18 @@ fn parse_plugin_config(path: &Path) -> Result<PluginConfig, PluginConfigError> {
             .as_str()
             .filter(|command| !command.trim().is_empty())
             .ok_or_else(|| value_error(path, "url_opener", "a non-empty command"))?;
+        if let Some(unknown) = unknown_placeholder(command, &["url"]) {
+            return Err(value_error(
+                path,
+                "url_opener",
+                &format!("`{{url}}` as the only placeholder, not `{unknown}`"),
+            ));
+        }
+        // The program is the first word; it must name one, and never be the link itself.
+        let program = crate::editor::split_command(command).into_iter().next();
+        if program.as_deref().is_none_or(|p| p.is_empty() || p.contains("{url}")) {
+            return Err(value_error(path, "url_opener", "a command that names a program first"));
+        }
         config.url_opener = Some(command.to_owned());
     }
     // A hostname is recognized by at most one forge; a cross-key collision is an invalid
@@ -606,11 +618,12 @@ fn unknown_key_error(path: &Path, key: &str, options: &str) -> PluginConfigError
 ///
 /// A brace that closes nothing opens nothing either: `code {fil` would otherwise reach the
 /// editor as the literal argument `{fil`, which is the typo this rule exists to catch
-fn unknown_placeholder(command: &str) -> Option<String> {
+fn unknown_placeholder(command: &str, known: &[&str]) -> Option<String> {
     let mut rest = command;
     while let Some(at) = rest.find('{') {
         rest = &rest[at + 1..];
-        let Some(tail) = rest.strip_prefix("file}").or_else(|| rest.strip_prefix("line}")) else {
+        let Some(tail) = known.iter().find_map(|name| rest.strip_prefix(&format!("{name}}}")))
+        else {
             // Name what was typed, stopping at its close or at whatever ended it.
             let end = rest.find(['{', '}']).unwrap_or(rest.len());
             let closed = rest[end..].starts_with('}');
@@ -852,6 +865,9 @@ mod tests {
             ("editor = \"code {fi{le} {file}\"\n", "`editor`"),
             ("url_opener = \"\"\n", "`url_opener`"),
             ("url_opener = 42\n", "`url_opener`"),
+            ("url_opener = \"bridge {ur}\"\n", "`{ur}`"),
+            ("url_opener = \"''\"\n", "`url_opener`"),
+            ("url_opener = \"{url} --new\"\n", "`url_opener`"),
             ("github_host = \"github.com\"\n", "`github_host`"),
             ("github_host = \"gitlab.com\"\n", "`github_host`"),
             ("gitlab_host = \"gitlab.com\"\n", "`gitlab_host`"),

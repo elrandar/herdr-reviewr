@@ -14,9 +14,10 @@ const OPENERS: &[&str] = &["xdg-open"];
 const OPENERS: &[&str] = &["open", "xdg-open"];
 
 /// Open `url` through the configured `url_opener`, else the first platform opener on `PATH`.
-/// Errors surface to the status line. The opener hands the URL on and exits at once, so this
-/// waits for it — reaping the child rather than leaving a zombie, and returning fast enough for
-/// a click handler (mirrors the codebase's synchronous tool calls).
+/// The opener runs detached from the frame: it is started and reaped on a background thread,
+/// never waited on, so a command that lingers (a browser launched in the foreground, a bridge
+/// to an unreachable host) can never freeze the pane. A command that cannot start is reported;
+/// what it does once running is its own.
 pub fn open(url: &str, configured: Option<&str>) -> Result<()> {
     let (tool, args, mut command) = if let Some(template) = configured {
         let (program, args) =
@@ -29,19 +30,18 @@ pub fn open(url: &str, configured: Option<&str>) -> Result<()> {
             .iter()
             .copied()
             .find(|candidate| crate::proc::on_path(candidate))
-            .context("no URL opener found; configure `url_opener`")?;
+            .context("no URL opener found: install `open`/`xdg-open`, or set `url_opener`")?;
         (tool.to_string(), vec![url.to_string()], crate::proc::command(tool))
     };
-    let status = command
+    let mut child = command
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .with_context(|| format!("spawning {tool}"))?;
-    if !status.success() {
-        anyhow::bail!("{tool} failed to open the URL");
-    }
+        .spawn()
+        .map_err(|error| anyhow::anyhow!("URL opener {tool:?} could not start: {error}"))?;
+    // Reaped off the frame thread, so a finished opener never lingers as a zombie.
+    std::thread::spawn(move || drop(child.wait()));
     Ok(())
 }
 
@@ -74,7 +74,13 @@ pub fn openable_url(url: &str) -> Result<&str, &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{openable_url, opener_argv};
+    use super::{open, openable_url, opener_argv};
+
+    #[test]
+    fn a_configured_opener_that_cannot_start_is_reported_never_replaced() {
+        let error = open("https://x.dev", Some("reviewr-no-such-opener {url}")).unwrap_err();
+        assert!(error.to_string().contains("reviewr-no-such-opener"), "{error}");
+    }
 
     #[test]
     fn the_opener_template_splits_like_editor_and_places_the_url() {
@@ -92,6 +98,9 @@ mod tests {
             "placed where named, never appended twice",
         );
         assert_eq!(argv("   "), None, "no program");
+        // A URL is one word whatever it holds, and is substituted once.
+        let odd = "https://x/a b'c{url}";
+        assert_eq!(opener_argv("bridge {url}", odd).map(|(_, a)| a), Some(vec![odd.to_string()]));
     }
 
     #[test]

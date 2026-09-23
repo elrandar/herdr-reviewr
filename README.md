@@ -304,11 +304,13 @@ editor = "code -g {file}:{line}"
 that runs on the server, so point `url_opener` at a command that reaches your browser:
 
 ```toml
-url_opener = "ssh laptop open {url}"
+url_opener = "browser-bridge --new-tab {url}"
 ```
 
 It reads like the `editor` key: quotes group words, and `{url}` goes where you put it, or at the
-end.
+end. The URL always arrives as one argument, never through a shell. So don't use
+`ssh host open {url}`: ssh hands its arguments to the remote shell, where a crafted link could run
+commands.
 
 ### Keybindings
 
