@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **A checked-out fork PR shows on the PR tab**, from `gh pr checkout` or `glab mr checkout`.
+  Found and first fixed by @tombeckenham ([#105](https://github.com/persiyanov/herdr-reviewr/issues/105)).
+
 ## [0.38.0] — 2026-09-16
 
 ### Changed
