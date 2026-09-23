@@ -4196,7 +4196,7 @@ fn pr_chip_width(app: &App, s: &forge::PrSnapshot) -> usize {
 
 /// The PR's merge, sync, and checks status for the footer, joined by `·`. Merge and sync show
 /// only for an open PR — they are meaningless once it is merged or closed.
-fn pr_state_line(app: &App, s: &forge::PrSnapshot) -> String {
+fn pr_state_line(_app: &App, s: &forge::PrSnapshot) -> String {
     let mut parts: Vec<String> = Vec::new();
     if s.state == forge::PrState::Open {
         match s.merge {
@@ -4213,10 +4213,11 @@ fn pr_state_line(app: &App, s: &forge::PrSnapshot) -> String {
     }
     parts.push(checks_summary(s));
     parts.push(format!("{} comments", s.comments.len()));
-    // A capped surface means the lists are a prefix; point at the forge for the rest rather
-    // than showing the partial counts as if complete.
-    if s.truncated {
-        parts.push(format!("+more on {} ↗", app.pr_forge.display_name()));
+    if s.comments_truncated {
+        parts.push("newest 100 comments".into());
+    }
+    if s.checks_truncated {
+        parts.push("newest 100 checks".into());
     }
     parts.join(" · ")
 }
@@ -4389,6 +4390,13 @@ fn note_markdown_regions(
                 app.note_painted_link(x1, x2, inner.y + display as u16, link.url.clone());
             }
         }
+        if let Some(d) = &m.details {
+            let x1 = inner.x + d.start.min(inner.width as usize) as u16;
+            let x2 = inner.x + d.end.min(inner.width as usize) as u16;
+            if x1 < x2 {
+                app.note_painted_details(x1, x2, inner.y + display as u16, d.summary.clone());
+            }
+        }
     }
 }
 
@@ -4474,10 +4482,32 @@ fn push_finding_quote(
         }
         // The quote's line range and gutter prefix, whose cells a selection never copies
         snippet = Some((from..lines.len(), gutter_prefix_width(gutter_w)));
-        lines.push(Line::from(Span::styled("─".repeat(width.max(1)), Style::default().fg(p.dim2))));
+        push_comment_rule(lines, width, p);
     }
     lines.push(Line::raw(""));
     snippet
+}
+
+fn push_comment_rule(lines: &mut Vec<Line<'static>>, width: usize, p: &Palette) {
+    lines.push(Line::from(Span::styled("─".repeat(width.max(1)), Style::default().fg(p.dim2))));
+}
+
+fn push_comment_byline(
+    lines: &mut Vec<Line<'static>>,
+    author: &str,
+    is_bot: bool,
+    created_at: &str,
+    now: std::time::SystemTime,
+    p: &Palette,
+) {
+    let author_color = if is_bot { p.dim1 } else { p.orange };
+    let mut spans = vec![Span::styled(format!("@{author}"), Style::default().fg(author_color))];
+    let age = relative_age(created_at, now);
+    if !age.is_empty() {
+        spans.push(Span::styled(SEP, Style::default().fg(p.dim2)));
+        spans.push(Span::styled(age, Style::default().fg(p.dim2)));
+    }
+    lines.push(Line::from(spans));
 }
 
 /// The PR read pane's painted content — one builder shared by the renderer and the
@@ -4487,8 +4517,8 @@ struct PrReadContent {
     notice: Vec<String>,
     /// The body's display lines.
     lines: Vec<Line<'static>>,
-    /// The markdown body's render metadata and its first display row, for hit-testing.
-    body_meta: Option<(usize, crate::markdown::Rendered)>,
+    /// Each markdown body's render metadata and its first display row, for hit-testing.
+    body_meta: Vec<(usize, crate::markdown::Rendered)>,
     /// The snippet quote's line range and its gutter prefix width, whose cells a selection
     /// never copies.
     snippet: Option<(std::ops::Range<usize>, usize)>,
@@ -4520,33 +4550,41 @@ fn pr_read_content(app: &App, inner: Rect) -> PrReadContent {
             .collect()
     };
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut body_meta: Option<(usize, crate::markdown::Rendered)> = None;
+    let mut body_meta: Vec<(usize, crate::markdown::Rendered)> = Vec::new();
     let mut snippet = None;
     if let Some(cm) = selected {
         // The finding's range paints as Diff-view rows; only the prose body is markdown
         snippet = push_finding_quote(&mut lines, app, cm, width, p);
+        let now = std::time::SystemTime::now();
+        // Every turn is byline then body. The pane title names the thread; the byline
+        // names who spoke and when, including the root, so a reply cannot look like
+        // the next paragraph of the same comment.
+        push_comment_byline(&mut lines, &cm.author, cm.author_is_bot, &cm.created_at, now, p);
         let mut rendered = app.markdown_render(&cm.body, width.max(1));
         let offset = lines.len();
         lines.append(&mut rendered.lines);
-        body_meta = Some((offset, rendered));
-        if cm.reply_count > 0 {
-            let plural = if cm.reply_count == 1 { "reply" } else { "replies" };
-            lines.push(Line::raw(""));
-            lines.push(Line::from(Span::styled(
-                format!(
-                    "↳ {} {plural} — open on {} to read",
-                    cm.reply_count,
-                    app.pr_forge.display_name()
-                ),
-                Style::default().fg(p.dim2),
-            )));
+        body_meta.push((offset, rendered));
+        for reply in &cm.replies {
+            push_comment_rule(&mut lines, width, p);
+            push_comment_byline(
+                &mut lines,
+                &reply.author,
+                reply.author_is_bot,
+                &reply.created_at,
+                now,
+                p,
+            );
+            let mut rendered = app.markdown_render(&reply.body, width.max(1));
+            let offset = lines.len();
+            lines.append(&mut rendered.lines);
+            body_meta.push((offset, rendered));
         }
     } else if app.pr_on_description() {
         if let Some(s) = app.pr_snapshot() {
             let mut rendered = app.markdown_render(&s.body, width.max(1));
             let offset = lines.len();
             lines.append(&mut rendered.lines);
-            body_meta = Some((offset, rendered));
+            body_meta.push((offset, rendered));
         }
     } else {
         // The empty-state remedy can outgrow a narrow pane; wrap it rather than clip it.
@@ -4598,7 +4636,7 @@ fn render_pr_read(frame: &mut Frame, app: &App, area: Rect) {
     let max = content.lines.len().saturating_sub(body.height as usize);
     app.note_pr_read_max_scroll(max);
     let scroll = app.pr_read_scroll.min(max);
-    if let Some((offset, rendered)) = &content.body_meta {
+    for (offset, rendered) in &content.body_meta {
         note_markdown_regions(app, rendered, body, scroll, *offset);
     }
     frame.render_widget(Paragraph::new(content.lines).scroll((saturating_row(scroll), 0)), body);

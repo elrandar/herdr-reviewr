@@ -709,12 +709,11 @@ impl PrRefresh {
         // Two tiers. Identity is whose story the tab tells: the resolved
         // repository target, the origin, and the checked-out branch — a change there
         // clears, because the snapshot belongs to another branch's story. Everything
-        // locally derived — the pinned `HEAD` and base, the branch's forge names — moves
+        // locally derived — the pinned `HEAD` and base, the branch's published heads — moves
         // on a mere commit or push, so it is freshness: the snapshot stays painted while
         // the replacement fetches behind it, stale, never wrong (Continuity). Both tiers start that fetch at once, on or off the tab, so
         // entering the tab finds fresh work already underway.
-        let branch =
-            (!input.local.detached).then(|| input.local.names.first().cloned().unwrap_or_default());
+        let branch = input.local.branch.clone();
         let branch_changed = matches!((&self.last_branch, &branch),
             (Some(previous), Some(current)) if previous != current);
         if let Some(branch) = branch {
@@ -1831,6 +1830,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
             (Some(K::PageUp), _) if app.focus == Focus::Files => app.pr_scroll_nav(-PAGE),
             (Some(K::PageDown), _) => app.pr_scroll_read(PAGE),
             (Some(K::PageUp), _) => app.pr_scroll_read(-PAGE),
+            (Some(K::Expand), _) => app.expand_pr_details(),
+            (Some(K::Collapse), _) => app.collapse_pr_details(),
             _ => {}
         }
         return Ok(());
@@ -2327,6 +2328,9 @@ fn perform_click(
             if let Some(url) = app.painted_link_at(m.column, m.row) {
                 app.focus = Focus::Diff;
                 app.open_link(&url);
+            } else if let Some(summary) = app.painted_details_at(m.column, m.row) {
+                app.focus = Focus::Diff;
+                app.toggle_details(&summary);
             } else if app.tab == crate::app::Tab::Pr || app.preview_active() {
                 // The painted surfaces have no cursor: a click only focuses the pane.
                 if ui::in_diff_pane(area, app, m.column, m.row) {
@@ -2721,8 +2725,9 @@ mod refresh_tests {
             local: crate::git::PrLocalState {
                 head_oid: Some(head.to_string()),
                 base_oid: Some("base".to_string()),
-                names: vec!["feature".to_string()],
-                detached: false,
+                branch: Some("feature".to_string()),
+                heads: Vec::new(),
+                pin: None,
             },
         }
     }
@@ -3087,12 +3092,11 @@ mod refresh_tests {
         // The checked-out branch is identity: a new branch is a new PR story
         // A detach in between is freshness.
         let mut on_a = input("head");
-        on_a.local.names = vec!["branch-a".to_string()];
+        on_a.local.branch = Some("branch-a".to_string());
         let mut on_b = input("head2");
-        on_b.local.names = vec!["branch-b".to_string()];
+        on_b.local.branch = Some("branch-b".to_string());
         let mut detached = input("head");
-        detached.local.names = Vec::new();
-        detached.local.detached = true;
+        detached.local.branch = None;
 
         let mut refresh = PrRefresh::new(true);
         assert!(refresh.observed(on_a.clone(), 0).is_none());
@@ -3109,12 +3113,15 @@ mod refresh_tests {
 
     #[test]
     fn local_state_churn_keeps_the_snapshot_and_refetches_behind_it() {
-        // The locally derived state — pins, branch names — moves on a mere commit or
+        // The locally derived state — pins, published heads — moves on a mere commit or
         // push, so it is freshness, not identity: the snapshot stays
         // painted while the replacement fetch runs.
         let original = input("head");
         let mut renamed = input("head");
-        renamed.local.names.push("published".to_string());
+        renamed.local.heads.push(crate::git::Head {
+            repo: crate::git::RepoTarget::new("github.com", "owner", "repo").unwrap(),
+            name: "published".to_string(),
+        });
         let mut moved_base = input("head");
         moved_base.local.base_oid = Some("advanced".to_string());
         let changes = [input("moved-head"), renamed, moved_base];

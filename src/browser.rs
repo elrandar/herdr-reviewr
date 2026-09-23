@@ -13,25 +13,27 @@ const OPENERS: &[&str] = &["xdg-open"];
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 const OPENERS: &[&str] = &["open", "xdg-open"];
 
-/// Open `url` in the default browser via the first available opener. Errors when none is on
-/// `PATH` (the caller surfaces it to the status line). The opener hands the URL to the browser
-/// and exits at once, so this waits for it — reaping the child rather than leaving a zombie, and
-/// returning fast enough for a click handler (mirrors the codebase's synchronous tool calls).
+/// Open `url` through the configured `url_opener`, else the first platform opener on `PATH`.
+/// Errors surface to the status line. The opener hands the URL on and exits at once, so this
+/// waits for it — reaping the child rather than leaving a zombie, and returning fast enough for
+/// a click handler (mirrors the codebase's synchronous tool calls).
 pub fn open(url: &str, configured: Option<&str>) -> Result<()> {
-    let (tool, mut command) = if let Some(tool) = configured {
-        let command = crate::proc::user_command(tool)
-            .with_context(|| format!("URL opener {tool:?} was not found"))?;
-        (tool, command)
+    let (tool, args, mut command) = if let Some(template) = configured {
+        let (program, args) =
+            opener_argv(template, url).context("the `url_opener` setting names no program")?;
+        let command = crate::proc::user_command(&program)
+            .with_context(|| format!("URL opener {program:?} was not found"))?;
+        (program, args, command)
     } else {
         let tool = OPENERS
             .iter()
             .copied()
             .find(|candidate| crate::proc::on_path(candidate))
             .context("no URL opener found; configure `url_opener`")?;
-        (tool, crate::proc::command(tool))
+        (tool.to_string(), vec![url.to_string()], crate::proc::command(tool))
     };
     let status = command
-        .arg(url)
+        .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -41,6 +43,20 @@ pub fn open(url: &str, configured: Option<&str>) -> Result<()> {
         anyhow::bail!("{tool} failed to open the URL");
     }
     Ok(())
+}
+
+/// The configured opener's program and arguments: `template` split the way the `editor` key
+/// is, `{url}` substituted per word — so a URL never splits — and appended when absent.
+fn opener_argv(template: &str, url: &str) -> Option<(String, Vec<String>)> {
+    let names_url = template.contains("{url}");
+    let mut words =
+        crate::editor::split_command(template).into_iter().map(|w| w.replace("{url}", url));
+    let program = words.next().filter(|p| !p.is_empty())?;
+    let mut args: Vec<String> = words.collect();
+    if !names_url {
+        args.push(url.to_string());
+    }
+    Some((program, args))
 }
 
 /// Gate a markdown link destination before it reaches the OS opener
@@ -58,7 +74,25 @@ pub fn openable_url(url: &str) -> Result<&str, &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::openable_url;
+    use super::{openable_url, opener_argv};
+
+    #[test]
+    fn the_opener_template_splits_like_editor_and_places_the_url() {
+        let url = "https://example.com/pr?a=1&b=2";
+        let argv = |t: &str| opener_argv(t, url).map(|(p, a)| (p, a.join("|")));
+        assert_eq!(argv("remote-open"), Some(("remote-open".into(), url.into())), "appended");
+        assert_eq!(
+            argv("ssh laptop 'open -g' {url}"),
+            Some(("ssh".into(), format!("laptop|open -g|{url}"))),
+            "quoted words stay whole",
+        );
+        assert_eq!(
+            argv("bridge --url={url} --new"),
+            Some(("bridge".into(), format!("--url={url}|--new"))),
+            "placed where named, never appended twice",
+        );
+        assert_eq!(argv("   "), None, "no program");
+    }
 
     #[test]
     fn the_url_guard_admits_http_and_https_case_insensitively() {

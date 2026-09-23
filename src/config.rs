@@ -464,7 +464,7 @@ fn parse_plugin_config(path: &Path) -> Result<PluginConfig, PluginConfigError> {
         let command = value
             .as_str()
             .filter(|command| !command.trim().is_empty())
-            .ok_or_else(|| value_error(path, "url_opener", "a non-empty executable"))?;
+            .ok_or_else(|| value_error(path, "url_opener", "a non-empty command"))?;
         config.url_opener = Some(command.to_owned());
     }
     // A hostname is recognized by at most one forge; a cross-key collision is an invalid

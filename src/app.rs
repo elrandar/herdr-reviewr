@@ -109,6 +109,7 @@ struct TabStash {
     preview_scroll: usize,
     preview_scrolled: bool,
     preview_text: String,
+    preview_expanded_details: HashSet<String>,
     /// Whether this tab has ever completed a reload. A never-visited tab has nothing worth
     /// painting, so its first entry loads before the frame instead of deferring.
     visited: bool,
@@ -212,9 +213,9 @@ impl BasePicker {
             return (0..self.rows.len()).collect();
         }
         let names: Vec<&str> = self.rows.iter().map(BaseChoice::name).collect();
-        let config = neo_frizbee::Config { sort: false, ..neo_frizbee::Config::default() };
-        let mut matches = neo_frizbee::match_list(&self.query, &names, &config);
-        matches.sort_by_key(|m| std::cmp::Reverse(m.score));
+        // The default sort is score descending, then input order: the tie rule above.
+        let config = neo_frizbee::Config::default();
+        let matches = neo_frizbee::Matcher::new(self.query.as_str(), &config).match_list(&names);
         matches.into_iter().map(|m| m.index as usize).collect()
     }
 
@@ -737,6 +738,12 @@ pub struct App {
     /// The painted markdown body's heading anchors as `(slug, content line index)`,
     /// covering the whole body — an anchor click can jump past the viewport.
     painted_anchors: std::cell::RefCell<Vec<(String, usize)>>,
+    /// `<details>` summary hit boxes painted this frame.
+    painted_details: std::cell::RefCell<Vec<PaintedDetails>>,
+    /// Open `<details>` on the selected PR description or thread.
+    pr_expanded_details: HashSet<String>,
+    /// Open `<details>` in the file-tab markdown preview. Stashed per file tab.
+    preview_expanded_details: HashSet<String>,
     /// The PR read pane's maximum useful scroll, noted the same way for
     /// [`Self::pr_scroll_read`].
     pr_read_max_scroll: std::cell::Cell<usize>,
@@ -876,6 +883,14 @@ struct PaintedLink {
     url: std::sync::Arc<str>,
 }
 
+#[derive(Clone, Debug)]
+struct PaintedDetails {
+    x_start: u16,
+    x_end: u16,
+    y: u16,
+    summary: std::sync::Arc<str>,
+}
+
 #[derive(Debug)]
 enum PluginConfigState {
     Ready(crate::config::PluginConfig),
@@ -938,6 +953,9 @@ impl App {
             painted_links: std::cell::RefCell::new(Vec::new()),
             painted_slots: std::cell::RefCell::new(Vec::new()),
             painted_anchors: std::cell::RefCell::new(Vec::new()),
+            painted_details: std::cell::RefCell::new(Vec::new()),
+            pr_expanded_details: HashSet::new(),
+            preview_expanded_details: HashSet::new(),
             pr_read_max_scroll: std::cell::Cell::new(usize::MAX),
             navigator_position: crate::config::NavigatorPosition::Right,
             navigator_side_pct: DEFAULT_SIDE_PCT,
@@ -1150,6 +1168,8 @@ impl App {
                 self.preview_scroll = old.preview_scroll;
                 self.preview_scrolled = old.preview_scrolled;
                 self.preview_text = std::mem::take(&mut old.preview_text);
+                self.preview_expanded_details = std::mem::take(&mut old.preview_expanded_details);
+                self.pr_expanded_details = std::mem::take(&mut old.pr_expanded_details);
                 self.mode = old.mode.clone();
                 self.input = std::mem::take(&mut old.input);
                 self.caret = old.caret;
@@ -1474,6 +1494,7 @@ impl App {
             self.preview = false;
             self.preview_scroll = 0;
             self.preview_max_scroll.set(usize::MAX);
+            self.preview_expanded_details.clear();
         }
         self.diff_path = Some(path.clone());
         let (old, new) = self.content_sides(&path, previous_path.as_deref());
@@ -1499,6 +1520,7 @@ impl App {
             self.preview = false;
             self.preview_scroll = 0;
             self.preview_max_scroll.set(usize::MAX);
+            self.preview_expanded_details.clear();
         }
         self.diff_path = Some(path.to_string());
         self.expanded_folds.clear(); // the File view has no folds
@@ -1912,6 +1934,7 @@ impl App {
     pub(crate) fn clear_painted_frame(&self) {
         self.painted_links.borrow_mut().clear();
         self.painted_anchors.borrow_mut().clear();
+        self.painted_details.borrow_mut().clear();
         self.painted_slots.borrow_mut().clear();
     }
 
@@ -1988,10 +2011,86 @@ impl App {
         }
     }
 
-    /// Render `text` as markdown wrapped to `width`, through the one-slot memo
+    /// Render `text` as markdown wrapped to `width`, through the memo, with the
+    /// current body's expanded `<details>` summaries.
     #[must_use]
     pub(crate) fn markdown_render(&self, text: &str, width: usize) -> crate::markdown::Rendered {
-        self.markdown_cache.borrow_mut().get(text, width, &self.highlighter, &self.palette)
+        let expanded = if self.tab == Tab::Pr {
+            &self.pr_expanded_details
+        } else {
+            &self.preview_expanded_details
+        };
+        self.markdown_cache.borrow_mut().get_expanded(
+            text,
+            width,
+            &self.highlighter,
+            &self.palette,
+            expanded,
+        )
+    }
+
+    fn active_expanded_details_mut(&mut self) -> &mut HashSet<String> {
+        if self.tab == Tab::Pr {
+            &mut self.pr_expanded_details
+        } else {
+            &mut self.preview_expanded_details
+        }
+    }
+
+    pub(crate) fn note_painted_details(
+        &self,
+        x_start: u16,
+        x_end: u16,
+        y: u16,
+        summary: std::sync::Arc<str>,
+    ) {
+        self.painted_details.borrow_mut().push(PaintedDetails { x_start, x_end, y, summary });
+    }
+
+    #[must_use]
+    pub fn painted_details_at(&self, col: u16, row: u16) -> Option<std::sync::Arc<str>> {
+        self.painted_details
+            .borrow()
+            .iter()
+            .find(|d| d.y == row && col >= d.x_start && col < d.x_end)
+            .map(|d| d.summary.clone())
+    }
+
+    pub fn toggle_details(&mut self, summary: &str) {
+        let set = self.active_expanded_details_mut();
+        if !set.remove(summary) {
+            set.insert(summary.to_string());
+        }
+    }
+
+    pub fn expand_pr_details(&mut self) {
+        let width = self.pane_width.get().max(1);
+        let bodies = self.pr_markdown_bodies();
+        let mut summaries = HashSet::new();
+        for text in &bodies {
+            for m in &self.markdown_render(text, width).meta {
+                if let Some(d) = &m.details {
+                    summaries.insert(d.summary.to_string());
+                }
+            }
+        }
+        self.pr_expanded_details.extend(summaries);
+    }
+
+    pub fn collapse_pr_details(&mut self) {
+        self.pr_expanded_details.clear();
+    }
+
+    fn pr_markdown_bodies(&self) -> Vec<String> {
+        if self.pr_on_description() {
+            return self.pr_snapshot().map(|s| vec![s.body.clone()]).unwrap_or_default();
+        }
+        let Some(cm) = self.pr_selected_comment() else {
+            return Vec::new();
+        };
+        let mut bodies = vec![cm.body.clone()];
+        bodies.extend(cm.replies.iter().map(|r| r.body.clone()));
+        bodies
     }
 
     /// Finding hunk rows for the PR read pane, through the one-slot memo.
@@ -2370,6 +2469,7 @@ impl App {
         self.pr_read_scroll = 0;
         self.pr_nav_scroll.set(0);
         self.reveal_pr_nav.set(true);
+        self.pr_expanded_details.clear();
     }
 
     /// Apply a snapshot fetched off-thread (`forge::fetch` runs on a worker so the UI never
@@ -2404,13 +2504,16 @@ impl App {
         // it survives while the new snapshot still has a description, and an emptied one
         // vanishes like a deleted comment.
         let on_description = self.pr_on_description();
+        let old_number = self.pr_snapshot().map(|s| s.number);
         let selected = self
             .pr_selected_comment()
             .map(|c| (c.author.clone(), c.created_at.clone(), c.anchor.clone()));
         self.pr = view;
         let offset = self.pr_description_offset();
         let restored = if on_description {
-            self.pr_has_description().then_some(0)
+            self.pr_has_description()
+                .then_some(0)
+                .filter(|_| self.pr_snapshot().map(|s| s.number) == old_number)
         } else {
             selected.as_ref().and_then(|(author, created, anchor)| {
                 let i = self.pr_snapshot()?.comments.iter().position(|c| {
@@ -2430,6 +2533,7 @@ impl App {
                 self.pr_read_scroll = 0;
             }
             self.pr_cursor = self.pr_cursor.min(clamped);
+            self.pr_expanded_details.clear();
         }
     }
 
@@ -2514,6 +2618,7 @@ impl App {
         self.pr_cursor = i;
         self.pr_read_scroll = 0;
         self.reveal_pr_nav.set(true);
+        self.pr_expanded_details.clear();
     }
 
     pub(crate) fn pr_scroll_nav(&mut self, delta: isize) {
@@ -2567,6 +2672,10 @@ impl App {
         std::mem::swap(&mut self.preview_scroll, &mut self.stash.preview_scroll);
         std::mem::swap(&mut self.preview_text, &mut self.stash.preview_text);
         std::mem::swap(&mut self.preview_scrolled, &mut self.stash.preview_scrolled);
+        std::mem::swap(
+            &mut self.preview_expanded_details,
+            &mut self.stash.preview_expanded_details,
+        );
         std::mem::swap(&mut self.tab_visited, &mut self.stash.visited);
     }
 

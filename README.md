@@ -300,13 +300,15 @@ editor = "code -g {file}:{line}"
 
 ### URL opener
 
-Set an opener on a remote host where the native browser command is not useful:
+`o` and link clicks open URLs with `open` (macOS) or `xdg-open` (Linux). Under `herdr --remote`
+that runs on the server, so point `url_opener` at a command that reaches your browser:
 
 ```toml
-url_opener = "remote-open"
+url_opener = "ssh laptop open {url}"
 ```
 
-reviewr passes the URL as the command's only argument. An absolute path also works.
+It reads like the `editor` key: quotes group words, and `{url}` goes where you put it, or at the
+end.
 
 ### Keybindings
 
@@ -357,7 +359,8 @@ A key is one printable character, or a `ctrl+`/`alt+` chord like `ctrl+f`. `Tab`
 ### Forge repositories and hosts
 
 The PR tab reads `upstream` when you have one, otherwise `origin`. A standard fork clone works
-without setup.
+without setup. Checking out a contributor PR (`gh pr checkout`, `glab mr checkout`) in an
+upstream clone attaches it too.
 
 GitHub.com, GitLab.com, dev.azure.com, and the `*.visualstudio.com` organization hosts work
 without configuration. For one self-hosted instance per forge, set its bare hostname:

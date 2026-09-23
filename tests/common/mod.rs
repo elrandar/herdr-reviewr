@@ -182,7 +182,8 @@ pub fn pr_snapshot() -> herdr_reviewr::forge::PrSnapshot {
         sync: Sync::InSync,
         checks: Vec::new(),
         comments: Vec::new(),
-        truncated: false,
+        comments_truncated: false,
+        checks_truncated: false,
     }
 }
 
@@ -201,7 +202,7 @@ pub fn comment() -> herdr_reviewr::forge::Comment {
         created_at: "2026-06-27T10:00:00Z".into(),
         is_resolved: false,
         is_outdated: false,
-        reply_count: 0,
+        replies: Vec::new(),
     }
 }
 

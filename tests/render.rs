@@ -881,12 +881,46 @@ fn the_pr_footer_keeps_the_open_action_when_the_state_line_is_long() {
         merge: Merge::Conflicting, // a long state line: conflicts · behind · failing · +more
         sync: Sync::Behind(3),
         checks: vec![Check { name: "ci".into(), status: CheckStatus::Failure }],
-        truncated: true,
+        comments_truncated: true,
+        checks_truncated: true,
         ..common::pr_snapshot()
     }));
     // At narrow width the state line is capped so the primary `o open ↗` is never crowded off.
     let footer = footer_line(&render_at(&app, 60));
     assert!(footer.contains("o open"), "the open action survives a long state line:\n{footer}");
+}
+
+#[test]
+fn the_pr_footer_names_a_capped_list_in_the_pane() {
+    use herdr_reviewr::app::Tab;
+    use herdr_reviewr::forge::{Check, CheckStatus, PrSnapshot, PrView};
+    let r = Repo::init();
+    r.write("x.rs", "y\n");
+    r.commit_all("init");
+    let mut app = app_on(&r);
+    app.set_tab(Tab::Pr).unwrap();
+    app.pr = PrView::Pr(Box::new(PrSnapshot { comments_truncated: true, ..common::pr_snapshot() }));
+    let footer = footer_line(&render(&app));
+    assert!(footer.contains("newest 100 comments"), "{footer}");
+    assert!(!footer.contains("+more on"), "{footer}");
+
+    app.pr = PrView::Pr(Box::new(PrSnapshot {
+        checks: vec![Check { name: "ci".into(), status: CheckStatus::Success }],
+        checks_truncated: true,
+        ..common::pr_snapshot()
+    }));
+    let footer = footer_line(&render(&app));
+    assert!(footer.contains("newest 100 checks"), "{footer}");
+    assert!(!footer.contains("+more on"), "{footer}");
+
+    app.pr = PrView::Pr(Box::new(PrSnapshot {
+        comments_truncated: true,
+        checks_truncated: true,
+        ..common::pr_snapshot()
+    }));
+    let footer = footer_line(&render(&app));
+    assert!(footer.contains("newest 100 comments"), "{footer}");
+    assert!(footer.contains("newest 100 checks"), "{footer}");
 }
 
 #[test]
@@ -2226,6 +2260,97 @@ fn an_anchor_in_a_comment_body_jumps_past_the_snippet_offset() {
     assert!(out.contains("Target"), "the heading is on screen:\n{out}");
     assert!(!out.contains("new"), "the snippet scrolled away:\n{out}");
     assert!(!out.contains("jump go"), "the body's top scrolled away:\n{out}");
+}
+
+#[test]
+fn a_finding_paints_its_replies_in_the_read_pane() {
+    use herdr_reviewr::app::Tab;
+    use herdr_reviewr::forge::{Comment, CommentKind, PrSnapshot, PrView, Reply};
+    let r = Repo::init();
+    r.write("x.rs", "y\n");
+    r.commit_all("init");
+    let mut app = app_on(&r);
+    app.set_tab(Tab::Pr).unwrap();
+    app.pr = PrView::Pr(Box::new(PrSnapshot {
+        comments: vec![Comment {
+            kind: CommentKind::Finding,
+            author: "codex".into(),
+            author_is_bot: true,
+            anchor: "x.rs:1".into(),
+            place: Some(herdr_reviewr::forge::FindingPlace::from_anchor(
+                "x.rs:1",
+                Some(herdr_reviewr::model::Side::New),
+            )),
+            body: "the finding".into(),
+            replies: vec![Reply {
+                author: "persijano".into(),
+                author_is_bot: false,
+                body: "Addressed in abc".into(),
+                created_at: "2026-06-27T11:30:00Z".into(),
+            }],
+            ..common::comment()
+        }],
+        ..common::pr_snapshot()
+    }));
+    let out = render(&app);
+    assert!(out.contains("the finding"), "{out}");
+    assert!(out.contains("@codex · "), "root byline with age:\n{out}");
+    assert!(out.contains("@persijano · "), "reply byline with age:\n{out}");
+    assert!(out.contains("Addressed in abc"), "{out}");
+    assert!(out.contains('─'), "a rule separates turns:\n{out}");
+    assert!(!out.contains("open on"), "{out}");
+    assert!(!out.contains("↳"), "{out}");
+}
+
+#[test]
+fn details_expand_on_the_pr_tab_and_reset_on_row_change() {
+    use herdr_reviewr::app::Tab;
+    use herdr_reviewr::forge::{Comment, PrSnapshot, PrView};
+    let r = Repo::init();
+    r.write("x.rs", "y\n");
+    r.commit_all("init");
+    let mut app = app_on(&r);
+    app.set_tab(Tab::Pr).unwrap();
+    let body = "<details> <summary>About Codex</summary>\n\nchrome lives here\n\n</details>";
+    app.pr = PrView::Pr(Box::new(PrSnapshot {
+        comments: vec![
+            Comment { author: "codex".into(), body: body.into(), ..common::comment() },
+            Comment { author: "ann".into(), body: "plain".into(), ..common::comment() },
+        ],
+        ..common::pr_snapshot()
+    }));
+    let out = render(&app);
+    assert!(out.contains("About Codex"), "{out}");
+    assert!(!out.contains("chrome lives here"), "{out}");
+
+    app.expand_pr_details();
+    let out = render(&app);
+    assert!(out.contains("chrome lives here"), "{out}");
+
+    app.apply_pr(PrView::Pr(Box::new(PrSnapshot {
+        comments: vec![
+            Comment { author: "codex".into(), body: body.into(), ..common::comment() },
+            Comment { author: "ann".into(), body: "plain".into(), ..common::comment() },
+        ],
+        ..common::pr_snapshot()
+    })));
+    let out = render(&app);
+    assert!(out.contains("chrome lives here"), "same thread keeps it open:\n{out}");
+
+    app.pr_move(1);
+    let out = render(&app);
+    assert!(out.contains("plain"), "{out}");
+    assert!(!out.contains("chrome lives here"), "row change collapses:\n{out}");
+
+    app.pr_move(-1);
+    let _ = render(&app);
+    let hit = (0..40u16)
+        .flat_map(|y| (0..140u16).map(move |x| (x, y)))
+        .find_map(|(x, y)| app.painted_details_at(x, y));
+    let summary = hit.expect("summary is clickable after a paint");
+    app.toggle_details(&summary);
+    let out = render(&app);
+    assert!(out.contains("chrome lives here"), "click opens:\n{out}");
 }
 
 // In-file find rendering.

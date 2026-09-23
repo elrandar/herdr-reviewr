@@ -6,8 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`url_opener` opens links through your own command**, e.g. a browser bridge under `herdr --remote`.
+  Thanks [@elrandar](https://github.com/elrandar) ([#102](https://github.com/persiyanov/herdr-reviewr/pull/102)).
+
+## [0.38.1] — 2026-09-23
+
 ### Fixed
-- **URL opening on remote hosts.** `url_opener` can delegate links to a browser bridge.
+- **A checked-out fork PR shows on the PR tab**, from `gh pr checkout` or `glab mr checkout`.
+  Thanks [@tombeckenham](https://github.com/tombeckenham) ([#108](https://github.com/persiyanov/herdr-reviewr/pull/108)).
+
+## [0.38.0] — 2026-09-16
+
+### Changed
+- **PR comments paint as comments.** Badge images become P1/P2/P3 chips, mermaid fences become
+  a `⧉ mermaid` placeholder, HTML headings match markdown headings, `<details>` starts collapsed,
+  and HTML tags no longer leak as source. The same renderer drives the All-files preview.
+- **A review thread shows every reply in the read pane.** GitHub, GitLab, and Azure DevOps.
+  The `↳ N replies — open on GitHub` line is gone. Click a `<details>` summary to toggle it;
+  on the PR tab `→`/`←` expand/collapse every details in the open thread.
+- **A capped list says so in the pane** (`newest 100 comments` / `newest 100 checks`) instead of
+  sending you to the forge.
 
 ## [0.37.1] — 2026-09-13
 
