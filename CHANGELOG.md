@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Changed words inside code comments stay readable** on the word highlight.
+  Thanks [@ubuntudroid](https://github.com/ubuntudroid) ([#91](https://github.com/persiyanov/herdr-reviewr/pull/91)).
+
 ## [0.38.1] — 2026-09-23
 
 ### Fixed
